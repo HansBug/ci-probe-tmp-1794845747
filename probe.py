@@ -68,7 +68,9 @@ def main():
     if not winners:
         print('RESULT unreachable')
         return 1
-    f = make(winners[0])
+    pref = [w for w in ('curl:safari', 'curl:firefox', 'curl:edge101', 'requests', 'cloudscraper') if w in winners]
+    f = make(pref[0])
+    print('feed collected with', pref[0])
     eps = []
     for p in (1, 2, 3, 4, 5):
         code, text, h = f(BASE + 'recentImages.php', {'page': str(p)})
