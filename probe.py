@@ -68,13 +68,21 @@ def main():
     if not winners:
         print('RESULT unreachable')
         return 1
-    best = winners[0]
-    f = make(best)
+    f = make(winners[0])
     eps = []
-    for p in (1, 2, 3):
+    for p in (1, 2, 3, 4, 5):
         code, text, h = f(BASE + 'recentImages.php', {'page': str(p)})
-        eps += [e for e in dict.fromkeys(EP_RE.findall(text)) if e not in eps]
-    eps = eps[:24]
+        found = [e for e in dict.fromkeys(EP_RE.findall(text)) if e not in eps]
+        print(f'feed page {p}: status={code} valid={valid(text)} episodes={len(found)}')
+        eps += found
+    eps = eps[:48]
+    for best in [w for w in ('curl:safari', 'curl:firefox', 'curl:edge101', 'requests', 'cloudscraper') if w in winners]:
+        part = eps[:12] if best == 'curl:safari' else eps[12:24] if best == 'curl:firefox' else eps[24:36] if best == 'curl:edge101' else eps[36:48]
+        bench(best, part)
+    return 0
+
+
+def bench(best, eps):
     print(f'--- B. throughput with {best}: 16 workers, {len(eps)} whole episodes, cold pages')
     cnt = collections.Counter(); lat = []; lock = threading.Lock(); local = threading.local()
 
@@ -110,8 +118,7 @@ def main():
     if lat:
         print(f'latency mean={statistics.mean(lat):.2f}s p95={sorted(lat)[max(0, int(len(lat)*0.95)-1)]:.2f}s')
     ok = cnt.get('200', 0) == total and cnt.get('invalid', 0) == 0
-    print('RESULT', 'ok' if ok else 'degraded')
-    return 0 if ok else 2
+    print('RESULT', best, 'ok' if ok else 'degraded')
 
 
 if __name__ == '__main__':
