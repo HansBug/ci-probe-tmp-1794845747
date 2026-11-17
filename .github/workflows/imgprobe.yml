@@ -1,0 +1,38 @@
+name: imgprobe
+on:
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: 'Seconds each throughput job runs'
+        default: '200'
+jobs:
+  reach:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install curl_cffi requests cloudscraper pillow
+      - run: python imgprobe.py --stage-a
+  ladder:
+    needs: reach
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {workers: 4, offset: 0, count: 3000}
+          - {workers: 8, offset: 3000, count: 6000}
+          - {workers: 16, offset: 9000, count: 10000}
+          - {workers: 32, offset: 19000, count: 14000}
+          - {workers: 64, offset: 33000, count: 18000}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install curl_cffi requests cloudscraper pillow
+      - run: python imgprobe.py --workers ${{ matrix.workers }} --offset ${{ matrix.offset }} --count ${{ matrix.count }} --seconds ${{ github.event.inputs.seconds || '200' }}
