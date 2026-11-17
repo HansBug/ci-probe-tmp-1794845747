@@ -1,0 +1,23 @@
+name: imglimit
+on:
+  workflow_dispatch:
+jobs:
+  limit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {rate: 3, offset: 70000, count: 2000, seconds: 240, mode: '--limit-mode'}
+          - {rate: 4, offset: 73000, count: 2000, seconds: 240, mode: '--limit-mode'}
+          - {rate: 6, offset: 76000, count: 2000, seconds: 240, mode: '--limit-mode'}
+          - {rate: 12, offset: 79000, count: 2000, seconds: 240, mode: '--limit-mode'}
+          - {rate: 2, offset: 82000, count: 1500, seconds: 600, mode: ''}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install curl_cffi requests cloudscraper pillow
+      - run: python -u imgprobe.py --workers 8 --rate ${{ matrix.rate }} --offset ${{ matrix.offset }} --count ${{ matrix.count }} --seconds ${{ matrix.seconds }} ${{ matrix.mode }}

@@ -195,12 +195,85 @@ def snippet(body):
     return re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', t)).strip()[:140]
 
 
+def stage_limit(strategy, workers, ids, rate, hold_seconds):
+    """Send at a fixed rate until the first 429, report it at once, then measure how long the block lasts."""
+    P = lambda *a: print(*a, flush=True)
+    P(f'--- L. {strategy} target={rate} img/s workers={workers}')
+    local = threading.local(); lock = threading.Lock()
+    t0 = time.time(); state = {'next': t0, 'ok': 0, 'first429': None, 'n': 0, 'bytes': 0}
+    it = iter(ids); it_lock = threading.Lock(); stop = threading.Event()
+    sample = {}
+
+    def nxt():
+        with it_lock:
+            return next(it, None)
+
+    def work():
+        if not hasattr(local, 'f'):
+            local.f = make(strategy, None)
+        while not stop.is_set() and time.time() - t0 < hold_seconds:
+            i = nxt()
+            if i is None:
+                return
+            with lock:
+                at = max(state['next'], time.time()); state['next'] = at + 1.0 / rate
+            time.sleep(max(0.0, at - time.time()))
+            try:
+                code, body, h = local.f(CDN.format(id=i))
+            except Exception as e:
+                code, body, h = 'EXC', b'', {}
+            with lock:
+                state['n'] += 1
+                if code == 200:
+                    state['ok'] += 1; state['bytes'] += len(body)
+                elif code == 429 and state['first429'] is None:
+                    state['first429'] = (time.time() - t0, state['ok'], state['n'])
+                    sample['h'] = {k: v for k, v in dict(h).items() if k.lower() in ('retry-after', 'cf-ray', 'content-type', 'server', 'cf-mitigated', 'ratelimit', 'x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-reset', 'set-cookie')}
+                    sample['body'] = snippet(body)
+                    stop.set()
+    with ThreadPoolExecutor(workers) as ex:
+        for _ in range(workers):
+            ex.submit(work)
+    wall = time.time() - t0
+    P(f'phase 1 done after {wall:.0f}s: ok={state["ok"]} of {state["n"]} requests ({state["ok"]/wall:.2f} img/s, {state["bytes"]/1024**2/wall:.2f} MiB/s)')
+    if state['first429'] is None:
+        P('NO 429 within the hold time')
+        P('SUMMARY', json.dumps({'rate': rate, 'blocked': False, 'ok': state['ok'], 'n': state['n']}))
+        return
+    ft, ok_before, n_before = state['first429']
+    P(f'FIRST 429 at t={ft:.1f}s after {ok_before} OK of {n_before} requests; headers={json.dumps(sample.get("h"))} body="{sample.get("body")}"')
+    # other client fingerprints on the same address, right after the first refusal
+    for st in ('requests', 'curl:firefox135', 'curl:edge101', 'cloudscraper'):
+        try:
+            code, body, h = make(st, None)(CDN.format(id=ids[-1 - len(st)]))
+            P(f'  other strategy {st}: {code} {sniff(body)}')
+        except Exception as e:
+            P(f'  other strategy {st}: ERROR {repr(e)[:60]}')
+    # how long does the block last: one probe every 5 s, same fingerprint
+    f = make(strategy, None); tb = time.time(); first_ok = None; log = []
+    k = len(ids) - 1
+    while time.time() - tb < 780:
+        time.sleep(5)
+        k -= 1
+        try:
+            code, body, h = f(CDN.format(id=ids[k]))
+        except Exception:
+            code = 'EXC'
+        log.append((round(time.time() - tb), code))
+        if code == 200:
+            first_ok = time.time() - tb
+            break
+    P('block probes (seconds since the first 429, status):', log[:6], '...', log[-3:])
+    P(f'BLOCK LASTED {first_ok:.0f}s' if first_ok else 'STILL BLOCKED after 780s')
+    P('SUMMARY', json.dumps({'rate': rate, 'blocked': True, 'ok_before': ok_before, 'n_before': n_before, 't_first429': round(ft, 1), 'block_s': round(first_ok) if first_ok else None}))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--workers', type=int, default=16); ap.add_argument('--count', type=int, default=3000)
     ap.add_argument('--offset', type=int, default=0); ap.add_argument('--seconds', type=int, default=180)
     ap.add_argument('--strategy', default='curl:safari17_0'); ap.add_argument('--referer', default='')
-    ap.add_argument('--stage-a', action='store_true'); ap.add_argument('--rate', type=float, default=0)
+    ap.add_argument('--stage-a', action='store_true'); ap.add_argument('--rate', type=float, default=0); ap.add_argument('--limit-mode', action='store_true')
     a = ap.parse_args()
     print('python', platform.python_version(), '| cpus', os.cpu_count(), '|', open('/proc/meminfo').readline().strip())
     s = json.load(open('sample_ids.json'))
@@ -208,7 +281,9 @@ def main():
         stage_a(s['gap'], s['full'])
         return 0
     ids = s['gap'][a.offset:a.offset + a.count]
-    if a.rate:
+    if a.limit_mode:
+        stage_limit(a.strategy, a.workers, ids, a.rate, a.seconds)
+    elif a.rate:
         stage_rate(a.strategy, a.workers, ids, a.seconds, a.rate)
     else:
         stage_b(a.strategy, a.workers, ids, a.seconds, a.referer or None)
