@@ -202,7 +202,7 @@ def stage_limit(strategy, workers, ids, rate, hold_seconds):
     local = threading.local(); lock = threading.Lock()
     t0 = time.time(); state = {'next': t0, 'ok': 0, 'first429': None, 'n': 0, 'bytes': 0}
     it = iter(ids); it_lock = threading.Lock(); stop = threading.Event()
-    sample = {}
+    sample = {}; kept = []
 
     def nxt():
         with it_lock:
@@ -225,7 +225,7 @@ def stage_limit(strategy, workers, ids, rate, hold_seconds):
             with lock:
                 state['n'] += 1
                 if code == 200:
-                    state['ok'] += 1; state['bytes'] += len(body)
+                    state['ok'] += 1; state['bytes'] += len(body); kept.append((i, body))
                 elif code == 429 and state['first429'] is None:
                     state['first429'] = (time.time() - t0, state['ok'], state['n'])
                     sample['h'] = {k: v for k, v in dict(h).items() if k.lower() in ('retry-after', 'cf-ray', 'content-type', 'server', 'cf-mitigated', 'ratelimit', 'x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-reset', 'set-cookie')}
@@ -238,6 +238,22 @@ def stage_limit(strategy, workers, ids, rate, hold_seconds):
     P(f'phase 1 done after {wall:.0f}s: ok={state["ok"]} of {state["n"]} requests ({state["ok"]/wall:.2f} img/s, {state["bytes"]/1024**2/wall:.2f} MiB/s)')
     if state['first429'] is None:
         P('NO 429 within the hold time')
+        import tarfile
+        from PIL import Image
+        bad = 0; kinds = collections.Counter(); buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode='w') as tar:
+            for i, body in kept:
+                kinds[sniff(body)] += 1
+                try:
+                    Image.open(io.BytesIO(body)).load()
+                except Exception:
+                    bad += 1
+                info = tarfile.TarInfo(f'{i}.jpg'); info.size = len(body); tar.addfile(info, io.BytesIO(body))
+        buf.seek(0)
+        with tarfile.open(fileobj=buf, mode='r') as tar:
+            names = tar.getnames()
+        sizes = sorted(len(b) for _, b in kept)
+        P(f'packed {len(kept)} images into a {buf.getbuffer().nbytes/1024**2:.1f} MiB tar ({len(names)} members); decode failures={bad}; types={dict(kinds)}; size KB mean={statistics.mean(sizes)/1024:.0f} median={sizes[len(sizes)//2]/1024:.0f} max={sizes[-1]/1024:.0f}')
         P('SUMMARY', json.dumps({'rate': rate, 'blocked': False, 'ok': state['ok'], 'n': state['n']}))
         return
     ft, ok_before, n_before = state['first429']
