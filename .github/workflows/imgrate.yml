@@ -1,0 +1,26 @@
+name: imgrate
+on:
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: 'Seconds each job runs'
+        default: '150'
+jobs:
+  rate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {rate: 2, offset: 60000, count: 500}
+          - {rate: 4, offset: 61000, count: 900}
+          - {rate: 7, offset: 62500, count: 1500}
+          - {rate: 12, offset: 65000, count: 2400}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install curl_cffi requests pillow
+      - run: python imgprobe.py --workers 8 --rate ${{ matrix.rate }} --offset ${{ matrix.offset }} --count ${{ matrix.count }} --seconds ${{ github.event.inputs.seconds || '150' }}

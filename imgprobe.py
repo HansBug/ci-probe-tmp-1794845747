@@ -123,19 +123,95 @@ def stage_b(strategy, workers, ids, seconds, referer):
     return recs
 
 
+def stage_rate(strategy, workers, ids, seconds, rate):
+    """Hold a global request rate; on a 429 pause everybody for Retry-After (or a backoff) and keep going."""
+    print(f'--- R. {strategy} workers={workers} target={rate} img/s budget={seconds}s ids={len(ids)}')
+    local = threading.local(); lock = threading.Lock()
+    t0 = time.time(); state = {'next': t0, 'pause_until': 0.0, 'streak': 0, 'paused': 0.0}
+    recs = []; samples429 = []; it = iter(ids); it_lock = threading.Lock()
+    status = collections.Counter(); stop = threading.Event()
+
+    def nxt():
+        with it_lock:
+            return next(it, None)
+
+    def slot():
+        with lock:
+            now = time.time()
+            at = max(state['next'], state['pause_until'], now)
+            state['next'] = at + 1.0 / rate
+        time.sleep(max(0.0, at - time.time()))
+
+    def work():
+        if not hasattr(local, 'f'):
+            local.f = make(strategy, None)
+        while not stop.is_set() and time.time() - t0 < seconds:
+            i = nxt()
+            if i is None:
+                return
+            slot()
+            t = time.time()
+            try:
+                code, body, h = local.f(CDN.format(id=i))
+            except Exception as e:
+                code, body, h = 'EXC:' + type(e).__name__, b'', {}
+            dt = time.time() - t
+            with lock:
+                recs.append((time.time() - t0, dt, code, len(body)))
+                status[str(code)] += 1
+                if code == 429:
+                    if len(samples429) < 3:
+                        samples429.append({'headers': {k: h.get(k) for k in ('retry-after', 'cf-ray', 'content-type', 'server', 'cf-mitigated', 'x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-reset', 'ratelimit') if h.get(k)},
+                                           'body': snippet(body)})
+                    state['streak'] += 1
+                    wait = float(h.get('retry-after') or min(30, 2 ** min(state['streak'], 5)))
+                    state['pause_until'] = max(state['pause_until'], time.time() + wait)
+                    state['paused'] += wait
+                elif code == 200:
+                    state['streak'] = 0
+                n = len(recs)
+                if n >= 200 and n % 50 == 0 and sum(1 for r in recs[-100:] if r[2] == 429) > 50:
+                    print('ABORT: more than half of the last 100 requests were 429'); stop.set()
+
+    with ThreadPoolExecutor(workers) as ex:
+        for _ in range(workers):
+            ex.submit(work)
+    wall = time.time() - t0
+    okr = [r for r in recs if r[2] == 200]
+    mb = sum(r[3] for r in okr) / 1024 ** 2
+    print(f'requests={len(recs)} ok={len(okr)} 429={status.get("429", 0)} wall={wall:.0f}s -> {len(okr)/wall:.2f} img/s, {mb/wall:.2f} MiB/s | paused total {state["paused"]:.0f}s')
+    print('status:', dict(status))
+    print('429 samples:', json.dumps(samples429)[:700])
+    per = collections.defaultdict(lambda: [0, 0])
+    for ts, dt, code, n in recs:
+        b = int(ts // 15); per[b][0] += (code == 200); per[b][1] += (code == 429)
+    print('per 15s window (ok, 429):', [tuple(v) for _, v in sorted(per.items())])
+    print('SUMMARY', json.dumps({'rate': rate, 'workers': workers, 'ok': len(okr), 'n': len(recs), 'r429': status.get('429', 0), 'img_s': round(len(okr) / wall, 2)}))
+
+
+def snippet(body):
+    import re
+    t = re.sub(r'<script.*?</script>|<style.*?</style>', ' ', body[:6000].decode('utf-8', 'ignore'), flags=re.S)
+    return re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', t)).strip()[:140]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--workers', type=int, default=16); ap.add_argument('--count', type=int, default=3000)
     ap.add_argument('--offset', type=int, default=0); ap.add_argument('--seconds', type=int, default=180)
     ap.add_argument('--strategy', default='curl:safari17_0'); ap.add_argument('--referer', default='')
-    ap.add_argument('--stage-a', action='store_true')
+    ap.add_argument('--stage-a', action='store_true'); ap.add_argument('--rate', type=float, default=0)
     a = ap.parse_args()
     print('python', platform.python_version(), '| cpus', os.cpu_count(), '|', open('/proc/meminfo').readline().strip())
     s = json.load(open('sample_ids.json'))
     if a.stage_a:
         stage_a(s['gap'], s['full'])
         return 0
-    stage_b(a.strategy, a.workers, s['gap'][a.offset:a.offset + a.count], a.seconds, a.referer or None)
+    ids = s['gap'][a.offset:a.offset + a.count]
+    if a.rate:
+        stage_rate(a.strategy, a.workers, ids, a.seconds, a.rate)
+    else:
+        stage_b(a.strategy, a.workers, ids, a.seconds, a.referer or None)
     return 0
 
 
