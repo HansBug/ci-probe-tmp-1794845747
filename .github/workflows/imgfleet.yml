@@ -9,21 +9,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {k: 0, offset: 90000},
-          - {k: 1, offset: 90900},
-          - {k: 2, offset: 91800},
-          - {k: 3, offset: 92700},
-          - {k: 4, offset: 93600},
-          - {k: 5, offset: 94500},
-          - {k: 6, offset: 95400},
-          - {k: 7, offset: 96300},
-          - {k: 8, offset: 97200},
-          - {k: 9, offset: 98100},
-          - {k: 10, offset: 99000},
-          - {k: 11, offset: 99900},
-          - {k: 12, offset: 100800},
-          - {k: 13, offset: 101700},
-          - {k: 14, offset: 102600},
+          - {k: 0, offset: 90000}
+          - {k: 1, offset: 90900}
+          - {k: 2, offset: 91800}
+          - {k: 3, offset: 92700}
+          - {k: 4, offset: 93600}
+          - {k: 5, offset: 94500}
+          - {k: 6, offset: 95400}
+          - {k: 7, offset: 96300}
+          - {k: 8, offset: 97200}
+          - {k: 9, offset: 98100}
+          - {k: 10, offset: 99000}
+          - {k: 11, offset: 99900}
+          - {k: 12, offset: 100800}
+          - {k: 13, offset: 101700}
+          - {k: 14, offset: 102600}
           - {k: 15, offset: 103500}
     steps:
       - uses: actions/checkout@v4
